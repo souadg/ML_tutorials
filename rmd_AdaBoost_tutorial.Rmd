@@ -1,0 +1,71 @@
+---
+title: "AdaBoost  Tutorial"
+author: "Souad Guemghar"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Random Forests vs AdaBoost
+
+These are notes from the StatQuest video presentation <https://www.youtube.com/watch?v=LsK-xG1cLYA&t=0s>
+
+AdaBoost is based on three concepts:
+
+| Random Forests | AdaBoost |
+|:------|:------|
+| Each tree is a full tree, some may be bigger than others but there is no predetermined maximum tree depth.  |  Trees are usually a node and two leaves: a **stump**. Stumps only use one variable to make predictions. Stumps are **weak learners**.  |  
+| Each tree has an equal vote on the final classification.  | Some stumps have more say on the final classification than others. |   
+| Each decision tree is made independently of the others, order is irrelevant.  | Order matters, each stump is made by taking the previous stump's mistakes (error) into account. |   
+
+## Creating a forest of stumps with AdaBoost
+
+1. Give each sample (row) a weight that indicates how important it is to be correctly classified. Start with the same weight for all rows $\frac{1}{N}$.
+1. To select the root node of the first stump, we calculate the Gini index for each feature, and select the feature with the lowest index which now makes the first stump in the forest.
+1. Calculate the __Total Error__ for the stump, which is the sum of the weights associated with the incorrectly classified samples. Total Error will always be between **0** (perfect stump) and **1** (horrible stump).
+1. Determine the **Amount of Say** of the stump with the formula:
+$$\text{Amount of Say} = \frac{1}{2} \log (\frac{1 - \text{Total Error}}{\text{Total Error}})$$
+Note that the lower the error, the higher the Amount of Say and vice versa. If Total Error is **0.5**, then the Amount of Say is **0**.
+```{r echo = FALSE}
+library(ggplot2)
+amount_of_say <- function(x) {
+  0.5 * log((1 - x)/x)
+}
+curve(amount_of_say, from = 0.001, to = 0.999, xlab = "Total Error", ylab = "Amount of Say", col = "blue", lwd = 3)
+# Alternative with ggplot
+# x <- seq(0.001, 0.999, by = 0.001)
+# y <- amount_of_say(x)
+# df <- as.data.frame(cbind(x, y))
+# ggplot(df, aes(x, y)) +
+#   geom_line(colour = 'blue', size = 2)
+
+```
+1. __Increase__ the sample weight of the incorrectly classified samples using the formula:
+$$\text{New Sample Weight} = \text{sample weight} \times e^{\text{amount of say}} $$
+__Note__: this is equivalent to scaling the sample weight by $\sqrt{\frac{1 - \text{Total Error}}{\text{Total Error}}}$.
+```{r echo = FALSE}
+sample_weight_exponent <- function(x) exp(x)
+curve(sample_weight_exponent, from = 0, to = 3.5, xlab = "Amount of Say", ylab = "exp(amount of say)", col = "blue", lwd = 3)
+```
+
+1. __Decrease__ the sample weights of the correctly classified samples using the formula:
+$$\text{New Sample Weight} = \text{sample weight} \times e^{-\text{amount of say}} $$
+__Note__:  this is equivalent to scaling the sample weight by $\sqrt{\frac{\text{Total Error}}{1 - \text{Total Error}}}$.
+```{r echo = FALSE}
+inv_sample_weight_exponent <- function(x) exp(-x)
+curve(inv_sample_weight_exponent, from = 0, to = 3.5, xlab = "Amount of Say", ylab = "exp(- amount of say)", col = "blue", lwd = 3)
+```
+1. Create a new weight column with the increased weight for the incorrectly classified and decreased weight for the correctly classified samples.
+1. __Normalise__ the new sample weights so that they will add up to 1.
+1. Use the __modified__ sample weights to make the __second stump__ in the forest, either using a __Weighted Gini Function__ or the following __weighted dataset__ method. Generate a new data set of the same size as the original taking the new weights into consideration. Pick a random number $x$ between __0__ and __1__. Select the $j^{th}$ sample to add to the new data set if
+$$\Sigma_{i = 0}^{j} w_i <  x \leq \Sigma_{i = 0}^{j + 1} w_i $$
+where $0 \leq j < N$, $w_i$ is the weight of the $i^{th}$ sample and $w_0 = 0$. This results in selecting samples with a high sample weight multiple times. 
+1. Give all samples of the new data set equal weights. Equal samples will be treated as a block creating a large penalty for misclassification.
+1. Go back to step 1 and repeat.
+
+## Making classifications
+
+Add up Amounts of Say for the stumps which classified a sample as __yes__ and compare to the sum of Amounts of Say for the stumps which classified it as __No__. If __yes__ has the largest sum then the sample is classified as __yes__, and vice versa.

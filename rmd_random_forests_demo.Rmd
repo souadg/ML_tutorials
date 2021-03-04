@@ -1,0 +1,221 @@
+---
+title: "Random Forest Demo"
+author: "Souad Guemghar"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: html_document
+---
+
+This demo is based on StatQuest's video <https://www.youtube.com/watch?v=6EXPYzbfLCE&t=13s> and the accompanying R code __rcode_statQuest_random_forest_demo.R__
+
+```{r message = FALSE}
+library(dplyr)
+library(tidyr) # for pivot_longer
+library(ggplot2)
+library(cowplot) # improves some of ggplot's default settings, overwites ggsave
+library(randomForest)
+```
+
+## Load data 
+
+The data used in this demo comes from the UCI machine learning repository <http://archive.ics.uci.edu/ml/index.php>
+Specifically, this is the heart disease data set <http://archive.ics.uci.edu/ml/datasets/Heart+Disease>
+
+```{r echo = FALSE}
+url <- "http://archive.ics.uci.edu/ml/machine-learning-databases/heart-disease/processed.cleveland.data"
+data <- read.csv(url, header=FALSE)
+str(data)
+```
+
+The columns are not labelled, we rename with labels from the UCI website.
+
+```{r echo = FALSE}
+colnames(data) <- c(
+  "age",
+  "sex",# 0 = female, 1 = male
+  "cp", # chest pain 
+  # 1 = typical angina, 
+  # 2 = atypical angina, 
+  # 3 = non-anginal pain, 
+  # 4 = no chest pain
+  "trestbps", # resting blood pressure (in mm Hg)
+  "chol", # serum cholestoral in mg/dl
+  "fbs",  # fasting blood sugar if less than 120 mg/dl, 1 = TRUE, 0 = FALSE
+  "restecg", # resting electrocardiographic results
+  # 1 = normal
+  # 2 = having ST-T wave abnormality
+  # 3 = showing probable or definite left ventricular hypertrophy
+  "thalach", # maximum heart rate achieved
+  "exang",   # exercise induced angina, 1 = yes, 0 = no
+  "oldpeak", # ST depression induced by exercise relative to rest
+  "slope", # the slope of the peak exercise ST segment 
+  # 1 = upsloping 
+  # 2 = flat 
+  # 3 = downsloping 
+  "ca", # number of major vessels (0-3) colored by fluoroscopy
+  "thal", # this is short of thalium heart scan
+  # 3 = normal (no cold spots)
+  # 6 = fixed defect (cold spots during rest and exercise)
+  # 7 = reversible defect (when cold spots only appear during exercise)
+  "hd" # (the predicted attribute) - diagnosis of heart disease 
+  # 0 if less than or equal to 50% diameter narrowing
+  # 1 if greater than 50% diameter narrowing
+)
+
+head(data)
+str(data)
+```
+
+We need to clean up the data, by conveting "?" inot **NA**, converting __sex__ into a **factor** with levels **F** for 0 (female) and **M** for 1 (male).
+
+```{r echo = FALSE}
+data <- data %>%
+    mutate_if(is.character, list(~na_if(., "?"))) %>%
+  mutate(across(c(thal, ca), as.integer), 
+         across(c(sex, cp, fbs, restecg, exang, slope, thal, ca, hd), as.factor)) %>%
+    mutate(sex = factor(sex, labels = c("F", "M"))) %>%
+  mutate(hd = as.factor(case_when(
+    hd == 0 ~ "Healthy",
+     TRUE ~ "Unhealthy"
+  )))
+str(data)
+```
+ 
+## Missing data imputation
+
+We impute missing values when predciting **hd** using all other variables as predictors. **hd ~ ** means we want to predict the column **hd** (**h**eart **d**isease) using the data in all of the other columns. 
+**iter = 6** specifies the number of random forests that should be built to estimate the missing values. In theory, 4 to 6 should be enough.
+
+The first output column **OOB** is the Out-Of-Bag error which should improve with iterations. If it doesn't then tells us the estimate is as good as it will ever get with this method.
+
+```{r}
+set.seed(42) # for reproducible results
+data.imputed <- rfImpute(hd ~ ., data = data, iter = 2)
+```
+
+## The model 
+
+Build a random forest with imputed data and return a proximity table.
+```{r echo = FALSE}
+model <- randomForest(hd ~ ., data = data.imputed, proximity = TRUE)
+model
+```
+
+Default settings are:
+
+* 500 trees
+* Number of variables per split:
+    + **Classification trees** square root of of the number of variables ($\sqrt{13} =$ `r sqrt(13)`)
+    + **Regression trees** a third of the number of variables.
+    
+The model's OOB estimate of error rate was 17.16%. The model also displays a confusion matrix, with 142 + 109 observations labelled correctly, and 22 + 30 labelled incorrectly.
+
+### Optimising number of trees
+
+To see if 500 trees is enough, we plot the error rates. The **model$err.rate** data frame within the **model** list has three columns:
+
+1. the OOB error rate
+1. The Healthy error rate, ie rate of those unhealthy inaccurately classified as healthy.
+1. The Unhealthy error rate, ie rate of those healthy inaccurately classified as unhealthy.
+
+Each row reflects the error rates at different stages of creating the random forest. The first row error rates after 1st tree, 2nd row contains the error rates after the first 2 trees, the nth row contains the error rates after making the first _n_ trees.
+
+```{r echo = FALSE}
+n <- nrow(model$err.rate)
+oob.error.data <- as.data.frame(model$err.rate) %>%
+  pivot_longer(cols = OOB:Unhealthy, names_to = "Type", values_to = "Error") %>%
+  arrange(desc(Type)) %>%
+  mutate(Trees = rep(1:n, times = 3), .before = 1)
+head(oob.error.data)
+
+ggplot(data = oob.error.data, aes(x = Trees, y = Error)) +
+  geom_line(aes(color = Type))
+```
+
+The blue line shows the error rate when classifying unhealthy patients. The green line shows the overall OOB error rate. The red line shows the error rate when classifying healthy patients.
+The error tendency is decreasing. Would this continue with a larger number of trees? Let us increase the number of trees and generate a new forest.
+The _randomForest_  variable controlling the number of trees is _ntree_.
+```{r}
+model <- randomForest(hd ~ ., data = data.imputed, ntree = 1000, proximity = TRUE)
+model
+```
+
+The new OOB error rate is the same as before, and the confusion matrix shows we did not do a better job classifying patients. Let us plot the error rates like before.
+
+```{r echo = FALSE}
+ n <- nrow(model$err.rate)
+oob.error.data <- as.data.frame(model$err.rate) %>%
+  pivot_longer(cols = OOB:Unhealthy, names_to = "Type", values_to = "Error") %>%
+  arrange(desc(Type)) %>%
+  mutate(Trees = rep(1:n, times = 3), .before = 1)
+head(oob.error.data)
+
+ggplot(data = oob.error.data, aes(x = Trees, y = Error)) +
+  geom_line(aes(color = Type))
+```
+
+Adding more trees does not help improve the error, but we can only know this if we make more trees.
+
+### Optimising number of variables per split
+
+The _randomForest_  variable controlling the number of random variables at each split is _mtry_. Below we look at the **OOB** error rate for different values of **mtry**.
+
+```{r}
+oob.values <- NULL
+m <- 12
+oob.values1 <- vector(length = m)
+for(i in 1:m) {
+  temp.model <- randomForest(hd ~ ., data = data.imputed, mtry = i, ntree = 1000)
+  oob.values <- as.data.frame(temp.model$err.rate) %>% 
+    select(OOB) %>% 
+    slice_tail() %>% 
+    bind_rows(oob.values, .)
+    oob.values1[i] <- temp.model$err.rate[nrow(temp.model$err.rate),1]
+}
+oob.values <- oob.values[, 1]
+oob.values1
+all.equal(oob.values, oob.values1)
+```
+
+From the above calculation, it looks like an _mtry_ of 4 provides the lowest OOB error!
+
+```{r}
+## find the minimum error
+min(oob.values)
+## find the optimal value for mtry...
+max(which(oob.values == min(oob.values)))
+## create a model for proximities using the best value for mtry
+model <- randomForest(hd ~ ., 
+                      data=data.imputed,
+                      ntree = 1000, 
+                      proximity = TRUE, 
+                      mtry = max(which(oob.values == min(oob.values))))
+
+model
+```
+
+
+### MDS plot of samples
+
+See StatQuest video on MDS plots <https://www.youtube.com/watch?v=GEn-_dAyYME>.
+
+```{r echo = FALSE}
+distance.matrix <- as.dist(1 - model$proximity) # Creates a distance matrix from the proximity matrix
+mds.stuff <- cmdscale(distance.matrix, eig = TRUE, x.ret = TRUE) # stands for classical multidimensional scaling (MDS) 
+mds.var.per <- round(mds.stuff$eig/sum(mds.stuff$eig)*100, 1) # Percentage of variation that each MDS axis accounts for
+
+# Format data for ggplot
+mds.values <- mds.stuff$points
+mds.data <- data.frame(Sample = rownames(mds.values),
+                       X = mds.values[,1],
+                       Y = mds.values[,2],
+                       Status = data.imputed$hd)
+
+ggplot(data = mds.data, aes(x = X, y = Y, label = Sample)) + 
+  geom_text(aes(color = Status)) +
+  theme_bw() +
+  xlab(paste("MDS1 - ", mds.var.per[1], "%", sep="")) +
+  ylab(paste("MDS2 - ", mds.var.per[2], "%", sep="")) +
+  ggtitle("MDS plot using (1 - Random Forest Proximities)")
+
+```
+
